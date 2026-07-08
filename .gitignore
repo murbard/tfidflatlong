@@ -3,3 +3,5 @@ files/*
 *.png
 
 __pycache__/
+!Country_Centroid_Prediction.png
+!Country_Centroid_Fullfit.png
