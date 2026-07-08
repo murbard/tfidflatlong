@@ -11,10 +11,15 @@ territories, 10-fold cross-validation.
 
 ## Why
 
-Linear probes that recover place coordinates from LLM activations are cited
-as evidence that LLMs learn a "world model" (e.g. Gurnee & Tegmark 2023).
-This is the corresponding null model: how much geography can a linear map
-read off raw lexical statistics, with no model of anything? Quite a lot.
+Whether LLMs have "world models" is, somehow, still debated. Linear probes
+recover the coordinates of places from LLM activations (e.g. Gurnee &
+Tegmark 2023), and skeptics answer that this is mere statistics, not a
+model of the world. This repo runs the reductio: even the tiniest
+statistical model — a bag of words and a linear regression — recovers the
+geometry of the globe. Modeling the world isn't some exotic emergent
+ability; it's what fitting data about the world does by default. If a
+tf-idf matrix embeds a world model, the claim that LLMs don't is
+outlandish.
 
 ## Method
 
