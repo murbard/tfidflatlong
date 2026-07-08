@@ -1,0 +1,18 @@
+248 countries/territories (Antarctica excluded)
+STRICT winner: ridge + svd100                 median=  1135  mean=  1545  p90=  3295  max=  6174  [132s]
+STRICT ridge, no svd                          median=  1058  mean=  1398  p90=  3011  max=  5722  [78s]
+STRICT gbt ceiling (1 seed)                   median=  1344  mean=  1844  p90=  4035  max= 10490  [5295s]
+wrote final_predictions.csv
+
+Worst 10 (strict winner, seed 0):
+  Réunion                                    6672 km
+  Canada                                     5920 km
+  Timor-Leste                                5099 km
+  Kiribati                                   5077 km
+  Bouvet Island                              4930 km
+  French Southern Territories                4926 km
+  Chile                                      4549 km
+  Palau                                      4536 km
+  Saint Pierre and Miquelon                  4495 km
+  Pitcairn                                   4295 km
+wrote Country_Centroid_Prediction.png

@@ -2,3 +2,4 @@
 files/*
 *.png
 
+__pycache__/

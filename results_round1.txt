@@ -1,0 +1,8 @@
+249 countries/territories loaded
+baseline: orig vec + enet + raw latlon                  vocab=  7932  median=   3386 km  mean=   4722 km  p90=   8970 km  max=  19172 km  [146s]
+orig vec + enet + xyz                                   vocab=  7932  median=   1673 km  mean=   2023 km  p90=   3994 km  max=   9274 km  [240s]
+orig vec + ridge + xyz                                  vocab=  7932  median=   1348 km  mean=   1743 km  p90=   3552 km  max=   8522 km  [7s]
+wide vec + ridge + xyz                                  vocab= 48747  median=   1159 km  mean=   1505 km  p90=   3185 km  max=  14486 km  [8s]
+wide vec + ridge + raw latlon                           vocab= 48747  median=   2028 km  mean=   3459 km  p90=   9236 km  max=  18118 km  [9s]
+wide vec + krr_cos + xyz                                vocab= 48747  median=   1117 km  mean=   1483 km  p90=   3132 km  max=  14175 km  [52s]
+wide vec + knn_cos + xyz                                vocab= 48747  median=   1078 km  mean=   1680 km  p90=   3892 km  max=  15132 km  [9s]

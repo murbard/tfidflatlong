@@ -1,0 +1,7 @@
+248 countries/territories (Antarctica excluded)
+strict 10-fold CV (ridge, tf-idf, 3D target)  median=  1058  mean=  1398  p90=  3011  max=  5722  (km)
+alphas selected across folds: median=0.001 (range 0.001–0.001)  [78s]
+wrote final_predictions.csv
+wrote Country_Centroid_Prediction.png
+full-sample fit (alpha=0.001, in-sample)      median=     1  mean=     1  p90=     3  max=     4  (km)
+wrote Country_Centroid_Fullfit.png

@@ -1,194 +1,232 @@
-import requests
-import os
+"""Predict country centroids (lat, lon) from the tf-idf of their Wikipedia page.
+
+Winning recipe (see experiments*.py / results_round*.txt for the search):
+  - strip literal coordinate strings from the pages (they contain the answer)
+  - tf-idf: letters-only tokens, max_df=0.8, min_df=5, sublinear tf
+  - linear ridge predicting a 3D point, projected back onto the unit sphere
+    (avoids the longitude-wraparound penalty of regressing raw lat/lon)
+
+Outputs:
+  - strict 10-fold CV metrics (vectorizer refit on training folds only)
+  - final_predictions.csv                : out-of-fold predictions, worst first
+  - Country_Centroid_Prediction.png      : map of out-of-fold predictions
+  - Country_Centroid_Fullfit.png         : map of a model fit on the whole
+                                           sample with the CV-optimal alpha
+"""
 import csv
+import os
+import re
+import time
+
 import numpy as np
-import matplotlib.pyplot as plt
+import requests
 from bs4 import BeautifulSoup
-from sklearn.multioutput import MultiOutputRegressor
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import MultiTaskElasticNetCV
-from sklearn.svm import SVR
-from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import ConstantKernel, RBF
-from sklearn.model_selection  import train_test_split, GridSearchCV
-import cv2
-import pickle
-from datetime import datetime
+from sklearn.linear_model import Ridge, RidgeCV
+from sklearn.model_selection import KFold
+
+R_EARTH = 6371.0
+LETTERS = r'(?u)\b[^\W\d_]{2,}\b'  # exclude tokens containing digits
+VEC = dict(max_df=0.8, min_df=5, sublinear_tf=True, token_pattern=LETTERS)
+ALPHAS = np.logspace(-3, 4, 30)
+SEEDS = (0, 1, 2)
+
+# Wikipedia blocks the default python-requests user agent
+HEADERS = {'User-Agent': 'tfidflatlong/1.0 (research; contact via github.com/murbard)'}
+
+COORD_LINE = re.compile(r'^.*[°′″].*$', re.MULTILINE)
+DECIMAL_PAIR = re.compile(r'-?\d{1,3}\.\d+;\s*-?\d{1,3}\.\d+')
 
 
+# ---------------------------------------------------------------- data
 
-
-
-# Fetch country coordinates from a CSV file online
 def fetch_coordinates():
-    url = "https://raw.githubusercontent.com/gavinr/world-countries-centroids/master/dist/countries.csv"
-    coords = {}
-    # Download and save the CSV if it's not already present
-    path = os.path.join('files','countries.csv')
+    """Country polygon barycenters from gavinr/world-countries-centroids."""
+    url = ('https://raw.githubusercontent.com/gavinr/'
+           'world-countries-centroids/master/dist/countries.csv')
+    path = os.path.join('files', 'countries.csv')
     if not os.path.exists(path):
         with open(path, 'wb') as f:
-            f.write(requests.get(url).content)
-    # Read the downloaded CSV
-    with open(path, newline='') as csvfile:
-        reader = csv.reader(csvfile)
-        next(reader)  # Skip the header row
+            f.write(requests.get(url, headers=HEADERS).content)
+    coords = {}
+    with open(path, newline='') as f:
+        reader = csv.reader(f)
+        next(reader)
         for row in reader:
-            country_name, lat, lon = row[2], float(row[1]), float(row[0])
-            coords[country_name] = (lat, lon)
+            name, lat, lon = row[2], float(row[1]), float(row[0])
+            coords[name] = (lat, lon)
+    # not a country; its "centroid" is a pole-wrapping polygon artifact
+    coords.pop('Antarctica', None)
     return coords
 
+
 def fetch_map_image():
-    map_file = os.path.join('files','Equirectangular-projection-topographic-world.jpg')
-    map_url = 'https://upload.wikimedia.org/wikipedia/commons/3/3e/Equirectangular-projection-topographic-world.jpg'
+    path = os.path.join('files', 'Equirectangular-projection-topographic-world.jpg')
+    url = ('https://upload.wikimedia.org/wikipedia/commons/3/3e/'
+           'Equirectangular-projection-topographic-world.jpg')
+    if not os.path.exists(path):
+        with open(path, 'wb') as f:
+            f.write(requests.get(url, headers=HEADERS).content)
+    return path
 
-    if not os.path.exists(map_file):
-        with open(map_file, 'wb') as f:
-            f.write(requests.get(map_url).content)
 
-    return cv2.imread(map_file)
-
-# Fetch country descriptions from Wikipedia
 def fetch_descriptions(coords):
-    desc = {}
-    # A mapping for country names that differ on Wikipedia
+    """Plain text of each country's Wikipedia page, cached under files/."""
     name_mapper = {
         'Saba': 'Saba_(island)',
         'Saint Martin': 'Saint_Martin_(island)',
         'Congo': 'Republic_of_the_Congo',
         'Congo DRC': 'Democratic_Republic_of_the_Congo',
-        'Canarias': 'Canary_Islands'
+        'Georgia': 'Georgia_(country)',
+        'Canarias': 'Canary_Islands',
     }
-    # Iterate through each country and download or read its description
-    for country_name in coords:
-        file_path = os.path.join('files', f"{country_name}.html")
-        if os.path.exists(file_path):
-            with open(file_path, 'r') as f:
-                soup = BeautifulSoup(f.read(), 'html.parser')
-                desc[country_name] = soup.get_text()
-        else:
-            url_name = name_mapper.get(country_name, country_name)
-            url = f"https://en.wikipedia.org/wiki/{url_name}"
-            html = requests.get(url).text
-            soup = BeautifulSoup(html, 'html.parser')
-            with open(file_path, 'w') as f:
-                f.write(soup.get_text())
-            desc[country_name] = soup.get_text()
+    desc = {}
+    for name in coords:
+        path = os.path.join('files', f'{name}.html')
+        if not os.path.exists(path):
+            url_name = name_mapper.get(name, name)
+            html = requests.get(f'https://en.wikipedia.org/wiki/{url_name}',
+                                headers=HEADERS).text
+            with open(path, 'w') as f:
+                f.write(BeautifulSoup(html, 'html.parser').get_text())
+        with open(path) as f:
+            desc[name] = f.read()
     return desc
 
-# Function for training one model configuration
-def train_model_with_params(X_fit, y_fit, model_type='MultiTaskElasticNetCV'):
-    # Define the model
-    if model_type == 'MultiTaskElasticNetCV':
-        model = MultiTaskElasticNetCV(l1_ratio=np.linspace(0, 1, 22)[1:-1], max_iter=50000, cv=20, n_jobs=7)
-        model.fit(X_fit.toarray(), y_fit)
-    elif model_type == 'SVR':
-        param_grid = {
-            'estimator__C': np.logspace(-3,3,10),
-            'estimator__epsilon': np.logspace(-1,1,3),
-            'estimator__gamma': ['auto', 'scale'] + list(np.logspace(-3, 3, 10))
-            }
-        svr = SVR(kernel='rbf')
-        multi_svr = MultiOutputRegressor(svr)
-        grid = GridSearchCV(multi_svr, param_grid, refit=True, verbose=3, cv=10, n_jobs=7)
-        model = grid.fit(X_fit.toarray(), y_fit)
-    elif model_type == 'GPR':
-        model = GaussianProcessRegressor(ConstantKernel(1.0, constant_value_bounds=(1e-5, 1e5)) * RBF(1.0, length_scale_bounds=(1e-16,1e2)))
-        param_grid = {
-            'alpha': np.logspace(-3,3,10),
-            }
-        grid = GridSearchCV(model, param_grid, refit=True, verbose=3, cv=10, n_jobs=7)
-        model = grid.fit(X_fit.toarray(), y_fit)
 
-    else:
-        raise ValueError(f"Unknown model type: {model_type}")
-
-    date_time_string = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-    pickle.dump(model, open(f'model_{model_type}_{date_time_string}.sav' , 'wb'))
-    return model
-
-def evaluate_model(model, X_holdout, y_holdout, i_holdout, coords):
-    prediction = model.predict(X_holdout.toarray())
-
-    # Output CSV format results
-    print("Country,Actual_Lat,Actual_Long,Predicted_Lat,Predicted_Long")
-    holdout_coords = []
-    predicted_coords = []
-    country_names = []
-    countries = list(coords.keys())
-    for j, index in enumerate(i_holdout):
-        country = countries[index]
-        lat = y_holdout[j][0]
-        lon = y_holdout[j][1]
-        print(f"{country},{lat},{lon},{prediction[j][0]},{prediction[j][1]}")
-        holdout_coords.append((lat, lon))
-        predicted_coords.append((prediction[j][0], prediction[j][1]))
-        country_names.append(country)
-
-    # Load the background map image
-    background_img  = fetch_map_image()
-    background_img = cv2.cvtColor(background_img, cv2.COLOR_BGR2RGB)
-
-    # Plot the map
-    plot_map(background_img, holdout_coords, predicted_coords, country_names)
+def strip_coordinates(text):
+    """Remove Wikipedia coordinate strings — they literally contain the answer."""
+    return DECIMAL_PAIR.sub(' ', COORD_LINE.sub(' ', text))
 
 
-def plot_map(background_img, holdout_coords, predicted_coords, country_names):
+# ---------------------------------------------------------------- geometry
+
+def haversine_km(a, b):
+    """a, b: (..., 2) arrays of (lat, lon) in degrees."""
+    lat1, lon1 = np.radians(a[..., 0]), np.radians(a[..., 1])
+    lat2, lon2 = np.radians(b[..., 0]), np.radians(b[..., 1])
+    h = (np.sin((lat2 - lat1) / 2) ** 2
+         + np.cos(lat1) * np.cos(lat2) * np.sin((lon2 - lon1) / 2) ** 2)
+    return 2 * R_EARTH * np.arcsin(np.sqrt(np.clip(h, 0, 1)))
+
+
+def to_xyz(latlon):
+    lat, lon = np.radians(latlon[:, 0]), np.radians(latlon[:, 1])
+    return np.stack([np.cos(lat) * np.cos(lon),
+                     np.cos(lat) * np.sin(lon),
+                     np.sin(lat)], axis=1)
+
+
+def from_xyz(xyz):
+    xyz = xyz / np.maximum(np.linalg.norm(xyz, axis=1, keepdims=True), 1e-12)
+    lat = np.degrees(np.arcsin(np.clip(xyz[:, 2], -1, 1)))
+    lon = np.degrees(np.arctan2(xyz[:, 1], xyz[:, 0]))
+    return np.stack([lat, lon], axis=1)
+
+
+# ---------------------------------------------------------------- model
+
+def cross_validate(texts, latlon):
+    """Strict 10-fold CV (vectorizer refit per fold), repeated over SEEDS.
+
+    Returns per-seed error arrays, seed-0 out-of-fold predictions, and the
+    ridge alphas selected in each fold.
     """
-    Plot the map using matplotlib.
-    :param background_img: The background image (numpy array) to plot.
-    :param holdout_coords: Actual coordinates [(lat, lon), ...]
-    :param predicted_coords: Predicted coordinates [(lat, lon), ...]
-    :param country_names: Names of the countries corresponding to the coordinates
-    """
-    # Set up the figure
-    fig, ax = plt.subplots(figsize=(18, 9))
+    y = to_xyz(latlon)
+    all_errs, alphas = [], []
+    oof_pred = np.zeros_like(latlon)
+    for seed in SEEDS:
+        errs = np.zeros(len(latlon))
+        for tr, te in KFold(10, shuffle=True, random_state=seed).split(latlon):
+            vec = TfidfVectorizer(**VEC)
+            Xtr = vec.fit_transform([texts[i] for i in tr]).toarray()
+            Xte = vec.transform([texts[i] for i in te]).toarray()
+            model = RidgeCV(alphas=ALPHAS)
+            model.fit(Xtr, y[tr])
+            alphas.append(model.alpha_)
+            pred_ll = from_xyz(model.predict(Xte))
+            errs[te] = haversine_km(latlon[te], pred_ll)
+            if seed == 0:
+                oof_pred[te] = pred_ll
+        all_errs.append(errs)
+    return np.array(all_errs), oof_pred, np.array(alphas)
 
-    # Display background
-    ax.imshow(background_img, extent=[-180, 180, -90, 90])
 
-    # Plot the actual and predicted coordinates
-    for (lat, lon), (pred_lat, pred_lon), country in zip(holdout_coords, predicted_coords, country_names):
-        ax.scatter(lon, lat, c='blue')  # Actual
-        ax.scatter(pred_lon, pred_lat, c='red')  # Predicted
-        ax.annotate(f"{country}", (lon, lat), textcoords="offset points", xytext=(0, 10), ha='center')
-        ax.annotate(f"{country}", (pred_lon, pred_lat), textcoords="offset points", xytext=(0, 10), ha='center')
-        ax.plot([lon, pred_lon], [lat, pred_lat], 'k--')  # Line connecting actual to predicted
+def fit_full(texts, latlon, alpha):
+    """Fit on the whole sample with a fixed alpha; return in-sample preds."""
+    X = TfidfVectorizer(**VEC).fit_transform(texts).toarray()
+    model = Ridge(alpha=alpha)
+    model.fit(X, to_xyz(latlon))
+    return from_xyz(model.predict(X))
 
-    # Customize plot
-    ax.set_title("Country Centroid Prediction")
-    ax.set_xlabel("Longitude")
-    ax.set_ylabel("Latitude")
 
-    # Save the figure as a PNG file
-    plt.savefig("Country_Centroid_Prediction.png")
-    print('foo')
+# ---------------------------------------------------------------- output
 
-# Convert latitude and longitude to x and y for plotting
-def lon_to_x(lon):
-    return int((lon + 180) * 5.1)
+def summarize(label, all_errs):
+    med = np.mean([np.median(e) for e in all_errs])
+    mean = np.mean(all_errs)
+    p90 = np.mean([np.percentile(e, 90) for e in all_errs])
+    worst = np.mean([np.max(e) for e in all_errs])
+    print(f'{label:45s} median={med:6.0f}  mean={mean:6.0f}  '
+          f'p90={p90:6.0f}  max={worst:6.0f}  (km)', flush=True)
 
-def lat_to_y(lat):
-    return int((-lat + 90) * 5.1)
 
-# Main part of the code
-if __name__ == "__main__":
+def plot_map(fname, title, names, latlon, pred):
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    img = plt.imread(fetch_map_image())
+    fig, ax = plt.subplots(figsize=(24, 12))
+    ax.imshow(img, extent=[-180, 180, -90, 90])
+    for (lat, lon), (plat, plon) in zip(latlon, pred):
+        ax.plot([lon, plon], [lat, plat], 'k-', lw=0.6, alpha=0.6)
+        ax.scatter(lon, lat, c='blue', s=12, zorder=3)
+        ax.scatter(plon, plat, c='red', s=12, zorder=3)
+    ax.set_title(title)
+    ax.set_xlim(-180, 180)
+    ax.set_ylim(-90, 90)
+    plt.tight_layout()
+    plt.savefig(fname, dpi=120)
+    plt.close(fig)
+    print(f'wrote {fname}', flush=True)
+
+
+if __name__ == '__main__':
     coords = fetch_coordinates()
     desc = fetch_descriptions(coords)
+    names = list(coords)
+    texts = [strip_coordinates(desc[n]) for n in names]
+    latlon = np.array([coords[n] for n in names])
+    print(f'{len(names)} countries/territories (Antarctica excluded)', flush=True)
 
-    # TF-IDF Vectorization
-    vectorizer = TfidfVectorizer(max_df=0.8, min_df=0.1)
-    descriptions = [desc[country] for country in coords]
-    X = vectorizer.fit_transform(descriptions)
+    t0 = time.time()
+    all_errs, oof, alphas = cross_validate(texts, latlon)
+    summarize('strict 10-fold CV (ridge, tf-idf, 3D target)', all_errs)
+    print(f'alphas selected across folds: median={np.median(alphas):g} '
+          f'(range {alphas.min():g}–{alphas.max():g})  '
+          f'[{time.time() - t0:.0f}s]', flush=True)
 
-    # Latitude and longitude
-    lat_longs = np.array([[lat, lon] for lat, lon in coords.values()])
+    e0 = all_errs[0]
+    with open('final_predictions.csv', 'w') as f:
+        f.write('country,lat,lon,pred_lat,pred_lon,err_km\n')
+        for i in np.argsort(-e0):
+            f.write(f'"{names[i]}",{latlon[i][0]:.2f},{latlon[i][1]:.2f},'
+                    f'{oof[i][0]:.2f},{oof[i][1]:.2f},{e0[i]:.0f}\n')
+    print('wrote final_predictions.csv', flush=True)
 
-    # Train/test split
-    X_fit, X_holdout, y_fit, y_holdout, i_fit, i_holdout = train_test_split(
-        X, lat_longs, range(len(lat_longs)), test_size=0.1, random_state=12345)
+    plot_map('Country_Centroid_Prediction.png',
+             'Country centroid prediction from Wikipedia tf-idf '
+             '(linear ridge, out-of-fold predictions; '
+             f'median error {np.median(e0):.0f} km)',
+             names, latlon, oof)
 
-    # Model training
-    model = train_model_with_params(X_fit, y_fit, model_type='MultiTaskElasticNetCV')
-
-    # Model evaluation
-    evaluate_model(model, X_holdout, y_holdout, i_holdout, coords)
+    # in-sample fit on the whole corpus, regularized with the CV-optimal alpha
+    alpha = np.median(alphas)
+    pred_full = fit_full(texts, latlon, alpha)
+    errs_full = haversine_km(latlon, pred_full)
+    summarize(f'full-sample fit (alpha={alpha:g}, in-sample)', [errs_full])
+    plot_map('Country_Centroid_Fullfit.png',
+             'Country centroid prediction from Wikipedia tf-idf '
+             f'(linear ridge fit on the whole sample, alpha={alpha:g}; '
+             f'in-sample median error {np.median(errs_full):.0f} km)',
+             names, latlon, pred_full)

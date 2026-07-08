@@ -1,0 +1,39 @@
+249 countries; mean len full/trunc/noref: 125416/122398/95414
+base (round-1 winner)                                      d= 48747  median=  1142  mean=  1514  p90=  3202  [20s]
+trunc tail (no categories)                                 d= 48220  median=  1136  mean=  1520  p90=  3217  [20s]
+no references section                                      d= 39241  median=  1181  mean=  1550  p90=  3354  [17s]
+min_df=1                                                   d=145063  median=  1361  mean=  1773  p90=  3794  [27s]
+min_df=5                                                   d= 22327  median=  1061  mean=  1418  p90=  3102  [15s]
+max_df=0.5                                                 d= 47637  median=  1148  mean=  1574  p90=  3333  [18s]
+max_df=0.9                                                 d= 48995  median=  1129  mean=  1509  p90=  3179  [17s]
+no sublinear_tf                                            d= 48747  median=  1337  mean=  1797  p90=  3669  [18s]
+binary tf                                                  d= 48747  median=  1408  mean=  1942  p90=  3930  [19s]
+stopwords english                                          d= 48591  median=  1144  mean=  1511  p90=  3206  [17s]
+bigrams, max 100k                                          d=100000  median=  1155  mean=  1489  p90=  3206  [31s]
+svd 100                                                    d=   100  median=  1103  mean=  1395  p90=  2684  [7s]
+svd 200                                                    d=   200  median=  1373  mean=  1701  p90=  3076  [19s]
+svd 300                                                    d=   249  median=  1142  mean=  1514  p90=  3202  [25s]
+
+Worst 20 countries (base config, mean over seeds):
+  Antarctica                                     14617 km (centroid  -77.2,  -177.6)
+  Timor-Leste                                     6176 km (centroid   -8.8,   126.0)
+  Réunion                                         5508 km (centroid  -21.1,    55.5)
+  Canada                                          5468 km (centroid   57.6,   -98.4)
+  Greenland                                       5248 km (centroid   74.2,   -42.1)
+  Kiribati                                        4605 km (centroid    1.9,  -157.4)
+  French Southern Territories                     4297 km (centroid  -49.3,    69.5)
+  United States                                   4283 km (centroid   38.8,   -96.3)
+  Saint Pierre and Miquelon                       4247 km (centroid   47.0,   -56.3)
+  Chile                                           4042 km (centroid  -37.8,   -70.8)
+  Pitcairn                                        4036 km (centroid  -24.4,  -128.3)
+  Palau                                           3949 km (centroid    7.5,   134.6)
+  Seychelles                                      3881 km (centroid   -4.7,    55.5)
+  Argentina                                       3855 km (centroid  -35.7,   -64.5)
+  French Polynesia                                3796 km (centroid  -17.7,  -149.4)
+  New Zealand                                     3780 km (centroid  -43.8,   170.7)
+  Glorioso Islands                                3696 km (centroid  -11.6,    47.3)
+  Uruguay                                         3682 km (centroid  -32.8,   -56.0)
+  Mauritius                                       3571 km (centroid  -20.3,    57.6)
+  Svalbard                                        3551 km (centroid   78.6,    16.0)
+
+wrote per_country_errors.csv
