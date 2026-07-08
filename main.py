@@ -171,22 +171,74 @@ def summarize(label, all_errs):
           f'p90={p90:6.0f}  max={worst:6.0f}  (km)', flush=True)
 
 
-def plot_map(fname, title, names, latlon, pred):
+def wrapped_segments(lon1, lat1, lon2, lat2):
+    """Line segments from (lon1,lat1) to (lon2,lat2) going the short way
+    around, split at the antimeridian when needed."""
+    d = lon2 - lon1
+    if abs(d) <= 180:
+        return [([lon1, lon2], [lat1, lat2])]
+    lon2s = lon2 - 360 if d > 0 else lon2 + 360
+    edge = -180 if lon2s < -180 else 180
+    t = (edge - lon1) / (lon2s - lon1)
+    latc = lat1 + t * (lat2 - lat1)
+    return [([lon1, edge], [lat1, latc]), ([-edge, lon2], [latc, lat2])]
+
+
+def plot_map(fname, title, names, latlon, pred, errs, n_highlight=12):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
+    from matplotlib import colors as mcolors, cm, patheffects
+
     img = plt.imread(fetch_map_image())
-    fig, ax = plt.subplots(figsize=(24, 12))
-    ax.imshow(img, extent=[-180, 180, -90, 90])
-    for (lat, lon), (plat, plon) in zip(latlon, pred):
-        ax.plot([lon, plon], [lat, plat], 'k-', lw=0.6, alpha=0.6)
-        ax.scatter(lon, lat, c='blue', s=12, zorder=3)
-        ax.scatter(plon, plat, c='red', s=12, zorder=3)
-    ax.set_title(title)
+    fig, ax = plt.subplots(figsize=(28, 14))
+    ax.imshow(img, extent=[-180, 180, -90, 90], alpha=0.85)
+
+    norm = mcolors.PowerNorm(0.5, vmin=0, vmax=max(errs.max(), 1.0))
+    cmap = plt.get_cmap('YlOrRd')
+    halo = [patheffects.withStroke(linewidth=1.6, foreground='white', alpha=0.85)]
+    worst = set(np.argsort(-errs)[:n_highlight]) if errs.max() > 100 else set()
+
+    for i, ((lat, lon), (plat, plon)) in enumerate(zip(latlon, pred)):
+        color = cmap(norm(errs[i]))
+        for xs, ys in wrapped_segments(lon, lat, plon, plat):
+            ax.plot(xs, ys, '-', color=color, lw=1.3, alpha=0.9, zorder=2)
+        ax.scatter(lon, lat, c='#1040c0', s=16, zorder=4,
+                   edgecolors='white', linewidths=0.4)
+        ax.scatter(plon, plat, c='#d02020', s=16, zorder=4,
+                   edgecolors='white', linewidths=0.4)
+        if i in worst:
+            ax.annotate(f'{names[i]} ({errs[i]:.0f} km)', (lon, lat),
+                        textcoords='offset points', xytext=(4, 4),
+                        fontsize=8, fontweight='bold', color='#701010',
+                        path_effects=halo, zorder=5)
+        else:
+            ax.annotate(names[i], (lon, lat),
+                        textcoords='offset points', xytext=(3, 3),
+                        fontsize=4.5, color='#202030',
+                        path_effects=halo, zorder=5)
+
+    ax.scatter([], [], c='#1040c0', s=30, label='actual centroid')
+    ax.scatter([], [], c='#d02020', s=30, label='predicted')
+    ax.legend(loc='lower left', fontsize=11, framealpha=0.9)
+    stats = (f'median {np.median(errs):>5.0f} km\n'
+             f'mean   {np.mean(errs):>5.0f} km\n'
+             f'p90    {np.percentile(errs, 90):>5.0f} km\n'
+             f'max    {np.max(errs):>5.0f} km')
+    ax.text(0.011, 0.135, stats, transform=ax.transAxes, fontsize=11,
+            family='monospace', va='bottom',
+            bbox=dict(facecolor='white', alpha=0.85, boxstyle='round,pad=0.4'))
+
+    sm = cm.ScalarMappable(norm=norm, cmap=cmap)
+    fig.colorbar(sm, ax=ax, fraction=0.018, pad=0.005,
+                 label='great-circle error (km)')
+    ax.set_title(title, fontsize=15)
     ax.set_xlim(-180, 180)
     ax.set_ylim(-90, 90)
+    ax.set_xticks([])
+    ax.set_yticks([])
     plt.tight_layout()
-    plt.savefig(fname, dpi=120)
+    plt.savefig(fname, dpi=150)
     plt.close(fig)
     print(f'wrote {fname}', flush=True)
 
@@ -218,7 +270,7 @@ if __name__ == '__main__':
              'Country centroid prediction from Wikipedia tf-idf '
              '(linear ridge, out-of-fold predictions; '
              f'median error {np.median(e0):.0f} km)',
-             names, latlon, oof)
+             names, latlon, oof, e0)
 
     # in-sample fit on the whole corpus, regularized with the CV-optimal alpha
     alpha = np.median(alphas)
@@ -229,4 +281,4 @@ if __name__ == '__main__':
              'Country centroid prediction from Wikipedia tf-idf '
              f'(linear ridge fit on the whole sample, alpha={alpha:g}; '
              f'in-sample median error {np.median(errs_full):.0f} km)',
-             names, latlon, pred_full)
+             names, latlon, pred_full, errs_full)
